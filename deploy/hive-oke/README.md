@@ -22,20 +22,20 @@ It is upstream Vexa `main` plus our patches (hivecommons/vexa#2 Teams chat-write
 Upstream v0.12.28 has no meeting chat-post route and its `/ws` sends no chat events; both
 are on upstream `main`, and upstream publishes control-plane images only for releases.
 
-| Component                                     | Image                                                       |
-| --------------------------------------------- | ----------------------------------------------------------- |
-| Chart                                         | `deploy/helm/charts/vexa` at hivecommons/vexa de9cb88 (chart 0.13.4) |
-| gateway | `ghcr.io/hivecommons/vexa-gateway:main-de9cb88-quorum` |
-| admin-api | `ghcr.io/hivecommons/vexa-admin-api:main-de9cb88-quorum` |
-| meeting-api | `ghcr.io/hivecommons/vexa-meeting-api:main-de9cb88-quorum` |
-| runtime | `ghcr.io/hivecommons/vexa-runtime:main-de9cb88-quorum` |
-| meeting bot | `ghcr.io/hivecommons/vexa-bot:main-de9cb88-quorum` |
-| CPU transcription | `ghcr.io/hivecommons/vexa-transcription-cpu:main-de9cb88-quorum` |
+| Component                                | Image                                                                            |
+| ---------------------------------------- | -------------------------------------------------------------------------------- |
+| Chart                                    | `deploy/helm/charts/vexa` at hivecommons/vexa de9cb88 (chart 0.13.4)             |
+| gateway                                  | `ghcr.io/hivecommons/vexa-gateway:main-de9cb88-quorum`                           |
+| admin-api                                | `ghcr.io/hivecommons/vexa-admin-api:main-de9cb88-quorum`                         |
+| meeting-api                              | `ghcr.io/hivecommons/vexa-meeting-api:main-de9cb88-quorum`                       |
+| runtime                                  | `ghcr.io/hivecommons/vexa-runtime:main-de9cb88-quorum`                           |
+| meeting bot                              | `ghcr.io/hivecommons/vexa-bot:main-de9cb88-quorum`                               |
+| CPU transcription                        | `ghcr.io/hivecommons/vexa-transcription-cpu:main-de9cb88-quorum`                 |
 | agent-api, agent-worker (pinned, unused) | `ghcr.io/hivecommons/vexa-agent-api`, `vexa-agent-worker` `:main-de9cb88-quorum` |
-| mcp (pinned, disabled) | `ghcr.io/hivecommons/vexa-mcp:main-de9cb88-quorum` |
-| postgres                                      | `docker.io/library/postgres:17.11-alpine`                   |
-| redis                                         | `docker.io/valkey/valkey:8.1.11-alpine`                     |
-| S3                                            | `docker.io/versity/versitygw:v1.10.0`                       |
+| mcp (pinned, disabled)                   | `ghcr.io/hivecommons/vexa-mcp:main-de9cb88-quorum`                               |
+| postgres                                 | `docker.io/library/postgres:17.11-alpine`                                        |
+| redis                                    | `docker.io/valkey/valkey:8.1.11-alpine`                                          |
+| S3                                       | `docker.io/versity/versitygw:v1.10.0`                                            |
 
 Digests are in `values.yaml` and `transcription.yaml`. Each Vexa image is a manifest list with
 linux/amd64 and linux/arm64, built on native runners by `.github/workflows/quorum-images.yml` in
@@ -64,7 +64,7 @@ enforcing.
   in the meeting.
 - `/ws` (header `X-API-Key`) sends `meeting.status` frames for the tenant's meetings, and chat
   and transcript frames for meetings it subscribes to (`{"action": "subscribe", "meetings":
-  [{"platform": ..., "native_id": ...}]}`).
+[{"platform": ..., "native_id": ...}]}`).
 - `POST` / `DELETE /bots/{platform}/{native_meeting_id}/speak`: see Voice.
 
 ## Voice
@@ -112,12 +112,12 @@ sees only its own meetings.
 
 ## Secrets (names only; values are random, created by install.sh, never in git)
 
-| Secret                         | Keys                                                                                                                                                                                   | Used by                                                                                  |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Secret                         | Keys                                                                                                                                                                                                                                                        | Used by                                                                                  |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `vexa-admin`                   | `ADMIN_API_TOKEN`, `INTERNAL_API_SECRET`, `TRANSCRIPTION_SERVICE_TOKEN`, `VEXA_DISPATCH_SIGNING_KEY`, `NEXTAUTH_SECRET`, `VEXA_SERVICE_AUTHORITY_SECRET`, `VEXA_SYSTEM_WEBHOOK_SECRET`, `REDIS_PASSWORD`, `RUNTIME_API_TOKEN`, `VEXA_MCP_DELEGATION_SECRET` | chart (`secrets.existingSecretName`), transcription                                      |
-| `vexa-s3`                      | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`                                                                                                                                           | chart (`storage.s3.existingSecret`), versitygw root user                                 |
-| `vexa-tenant-hivecommons-hive` | `api-key`                                                                                                                                                                              | hive's hive (hosted hive `hosted-available-oke-11-placeholder-r05x`); scopes `bot`, `tx` |
-| `postgres-credentials`         | chart-managed                                                                                                                                                                          | postgres                                                                                 |
+| `vexa-s3`                      | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`                                                                                                                                                                                                                | chart (`storage.s3.existingSecret`), versitygw root user                                 |
+| `vexa-tenant-hivecommons-hive` | `api-key`                                                                                                                                                                                                                                                   | hive's hive (hosted hive `hosted-available-oke-11-placeholder-r05x`); scopes `bot`, `tx` |
+| `postgres-credentials`         | chart-managed                                                                                                                                                                                                                                               | postgres                                                                                 |
 
 The admin credential is `ADMIN_API_TOKEN` (header `X-Admin-API-Key` on admin-api). Following
 the upstream Kubernetes docs, it is minted at install time and kept in `vexa-admin`.

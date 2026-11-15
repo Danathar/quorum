@@ -1,20 +1,24 @@
 # Vexa Helm values for the shared Quorum meeting service on hive-oke (namespace `meetings`).
 #
-# Chart: deploy/helm/charts/vexa from hivecommons/vexa at tag v0.12.28 (chart 0.12.2,
-# appVersion 0.12.28). Install with ./install.sh, which also creates the Secrets and applies
-# the namespace policy rendered from the `quorum` block below.
+# Chart: deploy/helm/charts/vexa from hivecommons/vexa main at commit de9cb887c15d13d1a2010b96e7ebad6493191f98 (chart 0.13.4,
+# appVersion 0.13.4). Install with ./install.sh, which also creates the Secrets and applies the
+# namespace policy rendered from the `quorum` block below.
 #
-# All images are pinned to an exact tag AND digest. Control-plane images are upstream
-# vexaai/v012-* v0.12.28 (multi-arch upstream). The bot and the CPU transcription service are
-# built by hivecommons/vexa (.github/workflows/quorum-images.yml) because upstream publishes
-# vexa-bot for amd64 only and no CPU transcription image; hive-oke nodes are all arm64.
+# All images are pinned to an exact tag AND digest. Every Vexa image (control plane, bot, CPU
+# transcription) is built from that same commit by hivecommons/vexa
+# (.github/workflows/quorum-images.yml, source=main) as ghcr.io/hivecommons/vexa-*:
+# main-<short sha>-quorum, multi-arch (linux/amd64 + linux/arm64); hive-oke nodes are all arm64.
+# Upstream v0.12.28 lacks the meeting chat-post route, /ws chat events and the speak route that
+# Quorum needs, and upstream publishes control-plane images only for releases.
 #
-# Upgrading: quorum-images.yml publishes <upstream tag>-quorum.N automatically for each new
-# upstream release. Moving the cluster is a PR here that bumps every pinned tag and digest below
-# (and in transcription.yaml); nothing upgrades the cluster automatically.
+# Upgrading: build the fork commit (README), then a PR here bumps quorum.vexaCommit and every
+# pinned tag and digest below (and in transcription.yaml); nothing upgrades the cluster by itself.
+# Never pin the moving main-quorum tag.
 
 # ---- Quorum deployment knobs (read by install.sh, ignored by the chart) ----
 quorum:
+  # The hivecommons/vexa commit the chart is taken from and every Vexa image is built from.
+  vexaCommit: de9cb887c15d13d1a2010b96e7ebad6493191f98
   # Most meeting-bot Pods that may run at once in `meetings`. Enforced twice:
   #   1. ResourceQuota `meetings-quota`: pods = controlPlanePods + maxConcurrentBots
   #      (bot Pods are bare Pods the runtime creates, so a quota cannot select only them);
@@ -36,7 +40,8 @@ global:
 
 # Secret `vexa-admin` is created by install.sh with random values (never in git). Keys:
 # ADMIN_API_TOKEN, INTERNAL_API_SECRET, TRANSCRIPTION_SERVICE_TOKEN, VEXA_DISPATCH_SIGNING_KEY,
-# NEXTAUTH_SECRET, VEXA_SERVICE_AUTHORITY_SECRET, VEXA_SYSTEM_WEBHOOK_SECRET.
+# NEXTAUTH_SECRET, VEXA_SERVICE_AUTHORITY_SECRET, VEXA_SYSTEM_WEBHOOK_SECRET, REDIS_PASSWORD,
+# RUNTIME_API_TOKEN, VEXA_MCP_DELEGATION_SECRET.
 secrets:
   existingSecretName: vexa-admin
 
@@ -49,25 +54,44 @@ storage:
     forcePathStyle: true
     existingSecret: vexa-s3
 
+# The captured-signal tape (raw capture uploads for replay) stays off. This sets the chart default
+# (VEXA_CAPTURE_SIGNAL_DEFAULT); install.sh also sets the fleet-wide admin-api setting to "false".
+diagnostics:
+  captureSignal: "false"
+
+# The chart's NetworkPolicies are off: policy.yaml carries the gateway policy Quorum needs (the
+# chart's own would take the same name, vexa-gateway-ingress), the chart's namespace default-deny
+# would also cut off versitygw and the transcription service, and flannel on hive-oke enforces no
+# NetworkPolicy anyway. See README "Network".
+networkPolicy:
+  enabled: false
+
+# The MCP server is for agent toolbelts and personal MCP clients; Quorum uses neither.
+mcp:
+  enabled: false
+  image:
+    repository: ghcr.io/hivecommons/vexa-mcp
+    tag: main-de9cb88-quorum@sha256:d9359f5f043ea34fa05ee81b6c872a432c558815c7cbe06890836ef77855fc1e
+
 gateway:
   replicaCount: 2
   image:
-    repository: docker.io/vexaai/v012-gateway
-    tag: v0.12.28@sha256:2e76319812f28adbb6bc328ac0a7484d3826924a9d38a9dd9599dd190fbb0f19
+    repository: ghcr.io/hivecommons/vexa-gateway
+    tag: main-de9cb88-quorum@sha256:15dce8f66e6c14d70c2da648e08264c789db4d3b7ee5dbd98dc091a8d1a4baf4
   service:
     type: ClusterIP
 
 adminApi:
   replicaCount: 2
   image:
-    repository: docker.io/vexaai/v012-admin-api
-    tag: v0.12.28@sha256:4c702354384eafe3a933cd537a106b7c15067cfd368a5f6da1a6e675e7e03e04
+    repository: ghcr.io/hivecommons/vexa-admin-api
+    tag: main-de9cb88-quorum@sha256:468ca0939d664278d56d1a34ac24da411c10378d500dea218607550965b193ab
 
 meetingApi:
   replicaCount: 2
   image:
-    repository: docker.io/vexaai/v012-meeting-api
-    tag: v0.12.28@sha256:cca46266feedcff29c3478472fd40133ba51f3c49a489a290040a56f1f0f3dca
+    repository: ghcr.io/hivecommons/vexa-meeting-api
+    tag: main-de9cb88-quorum@sha256:8a6dbcb788b70f40799feba42329a3ca8d80fecd263f1bcee2b937c03b858e28
   # Participants see this name; it says the bot takes notes (RFC: behaviour in the meeting).
   defaultBotName: "Hive notes (AI notetaker)"
   transcriptionServiceUrl: http://vexa-transcription:8000
@@ -75,18 +99,21 @@ meetingApi:
     # No audio or video recording unless a request explicitly asks for it.
     - name: RECORDING_ENABLED
       value: "false"
+    # No bot speaks: there is no TTS service in this namespace (no TTS_SERVICE_URL), so POST /bots
+    # with voice_agent_enabled answers 422 and POST .../speak answers 409. See README "Voice".
+    - name: VOICE_AGENT_ENABLED
+      value: "false"
 
 runtime:
   backend: k8s
   replicaCount: 1
   image:
-    repository: docker.io/vexaai/v012-runtime
-    tag: v0.12.28@sha256:a1f6448fbb380b9433364e8b572ec25a12aa4f274bf403f1d83a89cbf5812f2d
-  # v0.12.28-quorum.1, multi-arch, built from upstream v0.12.28 by hivecommons/vexa.
-  browserImage: ghcr.io/hivecommons/vexa-bot:v0.12.28-quorum.1@sha256:0c7e1923770d072b6c5d3003bf591e23c8f667a5a6dfd0051d537b14fd5c1898
+    repository: ghcr.io/hivecommons/vexa-runtime
+    tag: main-de9cb88-quorum@sha256:d3d9613c02107f5b547f29832b4cc9f92faf1ca6f888a19915279bddb8c5b64e
+  browserImage: ghcr.io/hivecommons/vexa-bot:main-de9cb88-quorum@sha256:622d8fff2a3c9048df7b423b45a5333550396af77b61b69121afef549110ad4b
   # Agent workers are not used by Quorum (agentApi is off); pinned anyway so nothing is mutable.
-  agentImage: docker.io/vexaai/v012-agent-api:v0.12.28@sha256:6eb37574b33aab233aabbe5907e06e106bae44a403e5df781a436da8201a928d
-  agentWorkerImage: docker.io/vexaai/v012-agent-worker:v0.12.28@sha256:a1120b24765ff6b1c86c5f9ddee35b5e71fdbb9543a23b918b278373ad705022
+  agentImage: ghcr.io/hivecommons/vexa-agent-api:main-de9cb88-quorum@sha256:ffb12b6db7c41a3d051206b35035747cd419002290e6817d3670afc60f867253
+  agentWorkerImage: ghcr.io/hivecommons/vexa-agent-worker:main-de9cb88-quorum@sha256:5abc84a1a3a854831cbf86920b10b1cbf3e346910ee85a4c930bc052e00628cb
   # Each spawned bot Pod: Guaranteed QoS, request == limit. Sizing per upstream production
   # guidance (deploy docs: ~1.0-1.3Gi steady, Teams spikes past 2Gi; do not go below 2560Mi).
   workloadResources:
@@ -99,6 +126,13 @@ runtime:
   # Spawned bot Pods schedule on arm64 nodes (every hive-oke node today).
   nodeSelector:
     kubernetes.io/arch: arm64
+  # Off: bots run under RuntimeDefault seccomp, as on v0.12. On, the chart runs a hostPath
+  # DaemonSet on every node to install a seccomp profile: that writes node files outside
+  # `meetings`, and its 4 Pods would take every bot slot in the namespace pod quota.
+  botSandbox:
+    enabled: false
+    installer:
+      enabled: false
 
 # Not needed by Quorum: no agent dispatch, no web UI (and no model credentials in this namespace).
 agentApi:

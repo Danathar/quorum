@@ -4,7 +4,8 @@
 # Never prints secret values.
 #
 # Usage: KUBE_CONTEXT=hive-oke VEXA_CHART=/path/to/hivecommons-vexa/deploy/helm/charts/vexa ./install.sh
-#   VEXA_CHART must be a checkout of hivecommons/vexa at tag v0.12.28 (chart 0.12.2).
+#   VEXA_CHART must be a checkout of hivecommons/vexa at the commit values.yaml names
+#   (quorum.vexaCommit), whose images it pins.
 # Needs: kubectl, helm, python3 (with PyYAML), openssl.
 set -euo pipefail
 
@@ -12,7 +13,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CTX="${KUBE_CONTEXT:-hive-oke}"
 NS=meetings
 RELEASE=vexa
-: "${VEXA_CHART:?set VEXA_CHART to deploy/helm/charts/vexa in a hivecommons/vexa v0.12.28 checkout}"
+: "${VEXA_CHART:?set VEXA_CHART to deploy/helm/charts/vexa in a hivecommons/vexa checkout at quorum.vexaCommit}"
 VALUES="$HERE/values.yaml"
 # Random secret length in bytes (hex-encoded to twice this many characters).
 SECRET_BYTES=32
@@ -48,9 +49,21 @@ if ! has_secret vexa-admin; then
     --from-literal=VEXA_DISPATCH_SIGNING_KEY="$(rand "$SECRET_BYTES")" \
     --from-literal=NEXTAUTH_SECRET="$(rand "$SECRET_BYTES")" \
     --from-literal=VEXA_SERVICE_AUTHORITY_SECRET="" \
-    --from-literal=VEXA_SYSTEM_WEBHOOK_SECRET="" >/dev/null
+    --from-literal=VEXA_SYSTEM_WEBHOOK_SECRET="" \
+    --from-literal=REDIS_PASSWORD="$(rand "$SECRET_BYTES")" \
+    --from-literal=RUNTIME_API_TOKEN="$(rand "$SECRET_BYTES")" \
+    --from-literal=VEXA_MCP_DELEGATION_SECRET="$(rand "$SECRET_BYTES")" >/dev/null
   echo "created secret/vexa-admin"
 fi
+# Keys chart 0.13 reads from vexa-admin that an older install did not create. Added once each with
+# a random value; an existing key is never changed.
+for key in REDIS_PASSWORD RUNTIME_API_TOKEN VEXA_MCP_DELEGATION_SECRET; do
+  if [ -z "$(k get secret vexa-admin -o "jsonpath={.data.$key}")" ]; then
+    k patch secret vexa-admin --type merge \
+      -p "{\"stringData\":{\"$key\":\"$(rand "$SECRET_BYTES")\"}}" >/dev/null
+    echo "added $key to secret/vexa-admin"
+  fi
+done
 
 echo "==> policy: LimitRange, NetworkPolicy, ResourceQuota (pods = $CP_PODS + $MAX_BOTS bots)"
 k apply -f "$HERE/policy.yaml"

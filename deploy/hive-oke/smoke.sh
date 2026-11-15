@@ -1,27 +1,32 @@
 #!/usr/bin/env bash
 # Smoke test for the shared Vexa service in `meetings`, run with the hivecommons-hive tenant key.
-# A throwaway curl Pod in `meetings` (deleted at the end) gets the key from the Secret through
-# secretKeyRef, so the key is never printed or copied out of the cluster.
+# A throwaway python Pod in `meetings` (deleted at the end) gets the key from the Secret through
+# secretKeyRef, so the key is never printed or copied out of the cluster. smoke_api.py runs inside
+# it (standard library only).
 #
-# Checks: gateway health; transcription health; bot list empty; a bot for an invalid Meet URL is
-# scheduled on arm64, starts (no exec format error) and ends or is stopped cleanly; no bot Pods
-# linger.
+# Checks: gateway and transcription health; a bot for a Meet code that does not exist is
+# scheduled on arm64 and starts (no exec format error); /ws connects and sends a meeting.status
+# frame for that bot; the chat and speak routes exist (a 4xx about the bot's state, never a
+# missing-route 404); DELETE stops the bot; no bot Pods linger; the bucket holds no objects
+# (recording and the captured-signal tape are off); the captured-signal setting reads "false".
 set -euo pipefail
 CTX="${KUBE_CONTEXT:-hive-oke}"
 NS=meetings
 TENANT="${TENANT:-hivecommons-hive}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 POD=vexa-smoke
 # A syntactically valid Meet code that does not exist.
 MEET_CODE=aaa-bbbb-ccc
 BOT_LABEL=runtime.managed=true
-# Seconds to wait for the bot Pod to appear, and for it to finish after a stop.
-APPEAR_TIMEOUT=180
+BUCKET_DIR=/data/vexa-meetings
+# Seconds to wait for the bot Pod to finish after the stop.
 FINISH_TIMEOUT=300
-CURL_IMAGE=docker.io/curlimages/curl:8.17.0@sha256:935d9100e9ba842cdb060de42472c7ca90cfe9a7c96e4dacb55e79e560b3ff40
+PY_IMAGE=docker.io/library/python:3.12-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
 
 k() { kubectl --context "$CTX" -n "$NS" "$@"; }
 cleanup() { k delete pod "$POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+fail=0
 
 k apply -f - >/dev/null <<EOF
 apiVersion: v1
@@ -34,49 +39,67 @@ spec:
   restartPolicy: Never
   automountServiceAccountToken: false
   containers:
-    - name: curl
-      image: $CURL_IMAGE
+    - name: smoke
+      image: $PY_IMAGE
       command: ["sleep", "900"]
       env:
         - name: API_KEY
           valueFrom: { secretKeyRef: { name: vexa-tenant-$TENANT, key: api-key } }
+        - name: MEET_CODE
+          value: $MEET_CODE
       resources:
-        requests: { cpu: 10m, memory: 16Mi }
-        limits: { cpu: 100m, memory: 64Mi }
+        requests: { cpu: 50m, memory: 64Mi }
+        limits: { cpu: 200m, memory: 128Mi }
 EOF
 k wait --for=condition=Ready "pod/$POD" --timeout=120s >/dev/null
 
-# Run curl in the Pod; $API_KEY is expanded inside the container, never here.
-# Usage: api METHOD URL [JSON_BODY]
-api() {
-  k exec "$POD" -- sh -c 'curl -sS -m 30 -w "\nHTTP %{http_code}\n" -X "$0" \
-    -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" ${2:+--data "$2"} "$1"' "$@"
-}
+echo "--- transcription /health"
+k exec "$POD" -- python3 -c "import urllib.request as u; print('HTTP', u.urlopen('http://vexa-transcription:8000/health', timeout=10).status)"
 
-echo "--- gateway /health";       k exec "$POD" -- curl -sS -m 10 -w '\nHTTP %{http_code}\n' http://vexa-gateway:8000/health
-echo "--- transcription /health"; k exec "$POD" -- curl -sS -m 10 -w '\nHTTP %{http_code}\n' http://vexa-transcription:8000/health
-echo "--- GET /bots/status";      api GET http://vexa-gateway:8000/bots/status
-echo "--- POST /bots (invalid Meet URL https://meet.google.com/$MEET_CODE)"
-api POST http://vexa-gateway:8000/bots "{\"platform\":\"google_meet\",\"native_meeting_id\":\"$MEET_CODE\"}"
+# Bot Pod watcher: reports the node arch and the first log lines while smoke_api.py runs.
+(
+  for _ in $(seq 1 60); do
+    bot="$(k get pods -l "$BOT_LABEL" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    if [ -n "$bot" ]; then
+      node=""
+      for _ in $(seq 1 30); do
+        node="$(k get pod "$bot" -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)"
+        [ -n "$node" ] && break; sleep 2
+      done
+      echo "bot Pod $bot on node $node, arch $(kubectl --context "$CTX" get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/arch}' 2>/dev/null)"
+      k wait --for=jsonpath='{.status.phase}'=Running "pod/$bot" --timeout=120s >/dev/null 2>&1 || true
+      sleep 20
+      echo "--- bot log (filtered)"
+      k logs "$bot" --tail=60 2>&1 | grep -iE "exec format|error|join|status|state|leav|exit" | head -20 || true
+      exit 0
+    fi
+    sleep 2
+  done
+  echo "no bot Pod appeared"
+) &
+watcher=$!
 
-echo "--- waiting for a bot Pod"
-deadline=$((SECONDS + APPEAR_TIMEOUT)); bot=""
-while [ -z "$bot" ] && [ "$SECONDS" -lt "$deadline" ]; do
-  bot="$(k get pods -l "$BOT_LABEL" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-  [ -n "$bot" ] || sleep 3
+echo "--- API checks (smoke_api.py)"
+k exec -i "$POD" -- python3 - < "$HERE/smoke_api.py" || fail=1
+wait "$watcher" || true
+
+echo "--- waiting for bot Pods to finish"
+for bot in $(k get pods -l "$BOT_LABEL" -o name 2>/dev/null); do
+  k wait --for=delete "$bot" --timeout="${FINISH_TIMEOUT}s" >/dev/null 2>&1 || true
 done
-if [ -z "$bot" ]; then
-  echo "no bot Pod appeared within ${APPEAR_TIMEOUT}s (the API response above says why)"
-else
-  node="$(k get pod "$bot" -o jsonpath='{.spec.nodeName}')"
-  echo "bot Pod $bot on node $node, arch $(kubectl --context "$CTX" get node "$node" -o jsonpath='{.metadata.labels.kubernetes\.io/arch}')"
-  echo "resources: $(k get pod "$bot" -o jsonpath='{.spec.containers[0].resources}')"
-  k wait --for=jsonpath='{.status.phase}'=Running "pod/$bot" --timeout=180s >/dev/null 2>&1 || true
-  sleep 30
-  echo "--- bot log (head)"; k logs "$bot" --tail=40 2>&1 | grep -iE "exec format|error|join|meet|status|state|leav|exit" | head -25 || true
-  echo "--- GET /bots/status";   api GET http://vexa-gateway:8000/bots/status
-  echo "--- DELETE the bot (no-op if it already ended)"
-  api DELETE "http://vexa-gateway:8000/bots/google_meet/$MEET_CODE"
-  k wait --for=delete "pod/$bot" --timeout="${FINISH_TIMEOUT}s" >/dev/null 2>&1 || true
-fi
-echo "--- lingering bot Pods:"; k get pods -l "$BOT_LABEL" --no-headers 2>&1 || true
+lingering="$(k get pods -l "$BOT_LABEL" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$lingering" = 0 ]; then echo "CHECK no_lingering_bots PASS"; else echo "CHECK no_lingering_bots FAIL $lingering"; fail=1; fi
+
+objects="$(k exec deploy/versitygw -- sh -c "find $BUCKET_DIR -type f | wc -l" | tr -d ' ')"
+if [ "$objects" = 0 ]; then echo "CHECK bucket_empty PASS"; else echo "CHECK bucket_empty FAIL $objects objects"; fail=1; fi
+
+capture="$(k exec -i deploy/vexa-admin-api -c admin-api -- python3 - <<'PY'
+import json, os, urllib.request
+req = urllib.request.Request("http://127.0.0.1:8001/internal/settings/diagnostics",
+                             headers={"X-Internal-Secret": os.environ["INTERNAL_API_SECRET"]})
+print((json.load(urllib.request.urlopen(req, timeout=10)).get("value") or {}).get("capture_signal"))
+PY
+)"
+if [ "$capture" = false ]; then echo "CHECK capture_signal_off PASS"; else echo "CHECK capture_signal_off FAIL $capture"; fail=1; fi
+
+exit "$fail"

@@ -70,6 +70,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Smoke-test the bundle without node_modules
+        run: npm run smoke
+      - name: Smoke-test the bundle with @snazzah/davey beside it
+        run: npm run smoke -- --with-davey
 
   dco:
     if: github.event_name == 'pull_request'

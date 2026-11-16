@@ -1,0 +1,12 @@
+# hive-mx, the cluster's receive-only mail receiver for hive (hivecommons/hive#18395).
+# Everything mail runs lives in this namespace; nothing else on hive-oke is touched.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mail
+  labels:
+    app.kubernetes.io/part-of: hive-mail
+    # hive-mx runs as non-root with no capabilities, so restricted is enforced.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

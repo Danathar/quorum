@@ -1,0 +1,145 @@
+# hive-mx (src/cmd/hive-mx in hivecommons/hive, #18395): accepts mail only for
+# hive@<known hive host>, keeps calendar invites, mail-in files and proof codes, and posts
+# them to the hub, which routes each one to its hive. It never sends mail, offers no AUTH and
+# relays nothing. The bearer token for the hub comes from Secret `hive-mx-hub-token`
+# (created by install.sh; the hub holds the same value as HIVE_HUB_MAIL_TOKEN).
+#
+# Image: ghcr.io/hivecommons/hive-mx, multi-arch (linux/amd64, linux/arm64), distroless static,
+# uid 65532, pinned by tag and digest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hive-mx
+  namespace: mail
+  labels:
+    app.kubernetes.io/name: hive-mx
+    app.kubernetes.io/part-of: hive-mail
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hive-mx
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hive-mx
+        app.kubernetes.io/part-of: hive-mail
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Secret volume files are group-owned by fsGroup, so the token is
+        # readable by the non-root user without being world-readable.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      # One replica per node, so a node drain never takes both.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: hive-mx
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: hive-mx
+          image: ghcr.io/hivecommons/hive-mx:aa286e8@sha256:bbed51d5f92fe208f566ca19b2dab54e14a5985481dcb6ae0c1893ef9d6c764f
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HIVE_MX_HUB_URL
+              value: http://hive-hub.hive-hub.svc.cluster.local
+            - name: HIVE_MX_HUB_TOKEN_FILE
+              value: /var/run/secrets/hive-mx/token
+            - name: HIVE_MX_DOMAIN
+              value: mx.hive.hivecommons.dev
+            - name: HIVE_MX_LISTEN
+              value: ":2525"
+            - name: HIVE_MX_HEALTH_LISTEN
+              value: ":8080"
+          ports:
+            - name: smtp
+              containerPort: 2525
+              protocol: TCP
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: hub-token
+              mountPath: /var/run/secrets/hive-mx
+              readOnly: true
+      volumes:
+        - name: hub-token
+          secret:
+            secretName: hive-mx-hub-token
+            defaultMode: 0440
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hive-mx
+  namespace: mail
+  labels:
+    app.kubernetes.io/name: hive-mx
+    app.kubernetes.io/part-of: hive-mail
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hive-mx
+---
+# Port 25 from the internet. An OCI Network Load Balancer (not the proxying classic LB) with
+# externalTrafficPolicy Local keeps the sender's IP, which SPF and the per-IP rate limit need.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hive-mx
+  namespace: mail
+  labels:
+    app.kubernetes.io/name: hive-mx
+    app.kubernetes.io/part-of: hive-mail
+  annotations:
+    oci.oraclecloud.com/load-balancer-type: "nlb"
+    oci-network-load-balancer.oraclecloud.com/subnet: "ocid1.subnet.oc1.iad.aaaaaaaaom27jaylwwnovy5gnfm75rceuvmpcqhe3ttgp6te3zlkz73i4pva"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  ipFamilies: [IPv4]
+  ipFamilyPolicy: SingleStack
+  selector:
+    app.kubernetes.io/name: hive-mx
+  ports:
+    - name: smtp
+      port: 25
+      targetPort: smtp
+      protocol: TCP

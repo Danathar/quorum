@@ -31,8 +31,8 @@ Secret (see "Hub" below).
 
 ## Versions (pinned by tag and digest)
 
-| Component | Image                                                                                                                           |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Component | Image                                                                                                                                                                                    |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | hive-mx   | `ghcr.io/hivecommons/hive-mx:aa286e8@sha256:bbed51d5f92fe208f566ca19b2dab54e14a5985481dcb6ae0c1893ef9d6c764f` (manifest list, linux/amd64 and linux/arm64; distroless static, uid 65532) |
 
 Built from `src/Dockerfile.mx` in hivecommons/hive by `docker.yml` (`build-mx`, `merge-mx`). Every

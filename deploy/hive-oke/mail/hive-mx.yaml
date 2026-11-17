@@ -53,7 +53,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: hive-mx
-          image: ghcr.io/hivecommons/hive-mx:aa286e8@sha256:bbed51d5f92fe208f566ca19b2dab54e14a5985481dcb6ae0c1893ef9d6c764f
+          image: ghcr.io/hivecommons/hive-mx:c501542@sha256:18d17c7ee20cae230af4f9220a18444c3401f0520260a9f02675c4059c8a282a
           imagePullPolicy: IfNotPresent
           env:
             - name: HIVE_MX_HUB_URL
